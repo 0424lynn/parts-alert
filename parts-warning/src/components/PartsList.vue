@@ -22,23 +22,25 @@
       <span v-else style="color: orange; margin-left: 16px;">⚠ 未配置最低库存</span>
     </div>
 
+    <!-- 最低库存 -->
     <div style="margin-bottom:8px;">
       <label>上传最低库存配置：</label>
       <input type="file" accept=".xls,.xlsx" @change="handleMinStockUpload" />
       <button @click="clearMinStock" style="margin-left:8px;color:red;">清除最低库存配置</button>
     </div>
     
+    <!-- 现有库存 -->
     <div style="margin-bottom:16px; display: flex; justify-content: space-between; align-items: center;">
       <div>
         <label>上传现有库存：</label>
         <input type="file" accept=".xls,.xlsx" @change="handleStockUpload" />
         <button @click="clearStock" style="margin-left:8px; color:red;">清除现有库存</button>
       </div>
-      
-      <button v-if="parts.length" @click="downloadPurchaseCSV" style="background-color: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">生成采购单</button>
+      <button v-if="displayParts.length" @click="downloadPurchaseCSV" style="background-color: #007bff; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">生成采购单</button>
     </div>
 
-    <table v-if="parts.length" border="1" style="width:100%;margin-bottom:16px;">
+    <!-- 合并后的展示（最低库存 ∪ 现有库存） -->
+    <table v-if="displayParts.length" border="1" style="width:100%;margin-bottom:16px;">
       <thead>
         <tr>
           <th>Part Code</th>
@@ -49,27 +51,36 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="item in parts" :key="item.code">
+        <tr v-for="item in displayParts" :key="item.code">
           <td>{{ item.code }}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.qty }}</td>
           <td>{{ item.minQty }}</td>
           <td>
-            <span v-if="isNumber(item.qty) && isNumber(item.minQty) && item.qty < item.minQty" style="color:red;">
-              需补{{ item.minQty - item.qty }}
-            </span>
-            <span v-else-if="isNumber(item.qty) && isNumber(item.minQty) && item.qty > item.minQty" style="color:green;">
-              超出{{ item.qty - item.minQty }}
-            </span>
-            <span v-else-if="isNumber(item.qty) && isNumber(item.minQty)">
-              刚好最低库存
-            </span>
-            <span v-else style="color:#999;">数据不完整</span>
-          </td>
+  <!-- 无库存（只在最低库存中出现）时，直接显示需要补 minQty -->
+  <span v-if="item.fromMinOnly" style="color:#d63384;">
+    无库存需补{{ item.minQty }}
+  </span>
+
+  <!-- 其余情况按 qty 与 minQty 比较 -->
+  <template v-else>
+    <span v-if="isNumber(item.qty) && isNumber(item.minQty) && item.qty < item.minQty" style="color:red;">
+      需补{{ item.minQty - item.qty }}
+    </span>
+    <span v-else-if="isNumber(item.qty) && isNumber(item.minQty) && item.qty > item.minQty" style="color:green;">
+      超出{{ item.qty - item.minQty }}
+    </span>
+    <span v-else-if="isNumber(item.qty) && isNumber(item.minQty)">
+      达标
+    </span>
+    <span v-else style="color:#999;">数据不完整</span>
+  </template>
+</td>
+
         </tr>
       </tbody>
     </table>
-    <div v-else style="color:gray;">请为当前仓库上传库存表格后查看预警结果</div>
+    <div v-else style="color:gray;">暂无数据：请上传最低库存配置或现有库存表以查看预警结果</div>
 
     <!-- 汇总报表 -->
     <div style="margin-top: 24px;">
@@ -104,41 +115,67 @@ export default {
         { id: 'warehouse8', name: 'YONG HANG' },
         { id: 'warehouse9', name: 'NJ' },
       ],
-      // allWarehouseData: { [warehouseId]: { minStockMap, parts } }
+      // allWarehouseData: { [warehouseId]: { minStockMap, parts, nameMap } }
       warehouseData: {},
       // 当前仓库工作集
       minStockMap: {},
       parts: [],
+      nameMap: {}, // 新增：持久化配件名称 code -> name
       // “脏标记”：只有在上传/清除时才保存，避免切仓误覆盖
       dirtyMin: false,
       dirtyParts: false,
+      dirtyNames: false,
     };
   },
   computed: {
     hasMinStockData() {
       return Object.keys(this.minStockMap).length > 0;
+    },
+    // 展示与导出的合并列表（最低库存 ∪ 现有库存）
+    displayParts() {
+      const stockMap = {};
+      for (const it of this.parts) {
+        if (!it || !it.code) continue;
+        const code = it.code;
+        stockMap[code] = {
+          code,
+          name: it.name || this.nameMap[code] || '',
+          qty: this.isNumber(it.qty) ? it.qty : 0,
+          minQty: this.isNumber(it.minQty) ? it.minQty : (this.minStockMap[code] || 0),
+          fromMinOnly: false
+        };
+      }
+      const result = Object.values(stockMap);
+      // 把最低库存里有、但库存里没有的编码补齐，并优先展示“无库存需补1”
+      for (const code of Object.keys(this.minStockMap)) {
+        if (!stockMap[code]) {
+          result.push({
+            code,
+            name: this.nameMap[code] || '',
+            qty: 0,
+            minQty: this.minStockMap[code] || 0,
+            fromMinOnly: true
+          });
+        }
+      }
+      result.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+      return result;
     }
   },
   watch: {
-    // 注意：不再 immediate，避免在尚未加载本地数据前就把工作集置空
+    // 不用 immediate，避免本地数据未加载就清空
     currentWarehouse(newId, oldId) {
-      // 保存上一个仓库（如果有真实变更）
       if (oldId) this.persistIfDirty(oldId);
-      // 记住选择
       localStorage.setItem(LS_KEYS.currentWarehouse, newId);
-      // 加载新仓库数据
       this.loadWorkingSet(newId);
-      // 切仓后重置脏标记
       this.dirtyMin = false;
       this.dirtyParts = false;
+      this.dirtyNames = false;
     }
   },
   mounted() {
-    // 1) 先恢复仓库列表
     this.loadWarehouses();
-    // 2) 再恢复所有仓库数据
     this.loadAllWarehouseData();
-    // 3) 恢复上次选中的仓库ID（若存在且有效）
     const savedId = localStorage.getItem(LS_KEYS.currentWarehouse);
     if (savedId && this.warehouses.some(w => w.id === savedId)) {
       this.currentWarehouse = savedId;
@@ -146,18 +183,9 @@ export default {
       this.ensureValidCurrentWarehouse();
       localStorage.setItem(LS_KEYS.currentWarehouse, this.currentWarehouse);
     }
-    // 4) 最关键：此时本地数据都加载好了，手动装载当前仓库的工作集
     this.loadWorkingSet(this.currentWarehouse);
   },
   methods: {
-    clearStock() {
-  if (confirm(`确定要清除 ${this.getCurrentWarehouseName()} 的现有库存吗？`)) {
-    this.parts = [];
-    this.dirtyParts = true;
-    this.persistIfDirty(this.currentWarehouse);
-    alert('现有库存已清除并保存');
-  }
-},
     // ---------- 仓库列表持久化 ----------
     loadWarehouses() {
       const stored = localStorage.getItem(LS_KEYS.warehousesList);
@@ -211,26 +239,28 @@ export default {
     saveAllWarehouseData() {
       localStorage.setItem(LS_KEYS.allWarehouseData, JSON.stringify(this.warehouseData));
     },
-    // 加载某个仓的工作集到内存
     loadWorkingSet(warehouseId) {
-      const data = this.warehouseData[warehouseId] || { minStockMap: {}, parts: [] };
+      const data = this.warehouseData[warehouseId] || { minStockMap: {}, parts: [], nameMap: {} };
       this.minStockMap = { ...data.minStockMap };
       this.parts = [...data.parts];
+      this.nameMap = { ...data.nameMap };
     },
     persistIfDirty(warehouseId) {
-      // 只有在上传/清除操作后才保存，避免切仓“空数据”覆盖掉已有
-      if (this.dirtyMin || this.dirtyParts) {
+      if (this.dirtyMin || this.dirtyParts || this.dirtyNames) {
+        const prev = this.warehouseData[warehouseId] || {};
         this.warehouseData[warehouseId] = {
-          minStockMap: { ...this.minStockMap },
-          parts: [...this.parts],
+          minStockMap: { ...(this.minStockMap || {}) },
+          parts: [...(this.parts || [])],
+          nameMap: { ...(this.nameMap || {}), ...(prev.nameMap || {}) } // 合并保留历史名称
         };
         this.saveAllWarehouseData();
         this.dirtyMin = false;
         this.dirtyParts = false;
+        this.dirtyNames = false;
       }
     },
 
-    // ---------- 基础工具 ----------
+    // ---------- 工具 ----------
     getCurrentWarehouseName() {
       const warehouse = this.warehouses.find(w => w.id === this.currentWarehouse);
       return warehouse ? warehouse.name : '未知仓库';
@@ -246,10 +276,8 @@ export default {
         const newId = 'warehouse_' + Date.now();
         this.warehouses.push({ id: newId, name: name.trim() });
         this.saveWarehouses();
-        // 初始化数据容器
-        this.warehouseData[newId] = { minStockMap: {}, parts: [] };
+        this.warehouseData[newId] = { minStockMap: {}, parts: [], nameMap: {} };
         this.saveAllWarehouseData();
-        // 切到新仓（将触发 watcher -> 保存 oldId（若脏）并加载新仓）
         this.currentWarehouse = newId;
       }
     },
@@ -292,24 +320,32 @@ export default {
         const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
         const map = {};
+        const nameByCode = {};
         json.forEach(row => {
           const code = row["Part Code"] ? String(row["Part Code"]).trim() : "";
           let minQty = row["Min Qty"];
           minQty = typeof minQty === "number" ? minQty : Number(String(minQty).replace(/\s/g, ""));
           if (code && !isNaN(minQty)) map[code] = minQty;
+          const pname = row["Part Name"] ? String(row["Part Name"]).trim() : "";
+          if (code && pname) nameByCode[code] = pname;
         });
 
         // 固定保存（除非下次再上传/清除）
         this.minStockMap = map;
-        // 与现有 parts 对齐 minQty
+
+        // 合并名称到 nameMap（保留旧名，新增或更新）
+        this.nameMap = { ...this.nameMap, ...nameByCode };
+
+        // 先补齐已有 parts 的名称和 minQty
         this.parts = this.parts.map(item => ({
           ...item,
+          name: item.name || this.nameMap[item.code] || '',
           minQty: this.minStockMap[item.code] || 0
         }));
 
-        // 标记并持久化（当前仓）
         this.dirtyMin = true;
-        this.dirtyParts = true; // parts 的 minQty 变化也需要保存
+        this.dirtyParts = true; // parts 的 min/name 变化也需要保存
+        this.dirtyNames = true;
         this.persistIfDirty(this.currentWarehouse);
 
         alert(`${this.getCurrentWarehouseName()} 最低库存配置已上传并保存`);
@@ -329,21 +365,23 @@ export default {
         const sheet = workbook.Sheets[sheetName];
         const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
-        // 覆盖当前仓的“现有库存”，并带上已固定的 minQty
+        const localNameMap = { ...this.nameMap };
         const newParts = json.map(row => {
           const code = String(row["Part Code"] ?? "").trim();
           const name = String(row["Part Name"] ?? "").trim();
           const qty  = Number(row["Shelf Qty"]);
+          if (code && name) localNameMap[code] = name; // 更新名称字典
           return { code, name, qty, minQty: this.minStockMap[code] || 0 };
         });
 
         this.parts = newParts;
+        this.nameMap = localNameMap;
 
-        // 标记并持久化（当前仓）
         this.dirtyParts = true;
+        this.dirtyNames = true;
         this.persistIfDirty(this.currentWarehouse);
 
-       
+        // 按你的要求：现有库存上传后不弹提示
         e.target.value = '';
       };
       reader.readAsArrayBuffer(file);
@@ -360,79 +398,196 @@ export default {
       }
     },
 
+    clearStock() {
+      if (confirm(`确定要清除 ${this.getCurrentWarehouseName()} 的现有库存吗？`)) {
+        this.parts = [];
+        this.dirtyParts = true;
+        this.persistIfDirty(this.currentWarehouse);
+        alert('现有库存已清除并保存');
+      }
+    },
+
     // ---------- 导出 ----------
     downloadPurchaseCSV() {
-      const header = ["仓库", "Part Code", "Part Name", "Shelf Qty", "Min Qty", "需补数量"];
-      const rows = this.parts
-        .filter(item => this.isNumber(item.qty) && this.isNumber(item.minQty) && item.qty < item.minQty)
-        .map(item => [this.getCurrentWarehouseName(), item.code, item.name, item.qty, item.minQty, item.minQty - item.qty]);
+  const header = ["仓库", "Part Code", "Part Name", "Shelf Qty", "Min Qty", "需补数量", "状态"];
 
-      if (rows.length === 0) {
-        alert("当前仓库暂无需要补货的配件");
-        return;
+  const rows = this.displayParts
+    // 采购单只导出“需要补货”的项：qty < minQty（无库存的项 qty=0 会自然命中）
+    .filter(item => this.isNumber(item.qty) && this.isNumber(item.minQty) && item.qty < item.minQty)
+    .map(item => {
+      const qty = Number(item.qty);
+      const minQty = Number(item.minQty);
+      const needQty = minQty - qty;
+      const status = item.fromMinOnly ? `无库存需补${minQty}` : '需补货';
+      return [
+        this.getCurrentWarehouseName(),
+        item.code || '',
+        item.name || '',
+        qty,
+        minQty,
+        needQty,
+        status
+      ];
+    });
+
+  if (rows.length === 0) {
+    alert("当前仓库暂无需要补货的配件");
+    return;
+  }
+
+  const csvContent = [header, ...rows].map(row =>
+    row.map(field => {
+      const str = String(field);
+      if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+        return '"' + str.replace(/"/g, '""') + '"';
       }
+      return str;
+    }).join(',')
+  ).join('\n');
 
-      const csvContent = [header, ...rows].map(row =>
-        row.map(field => {
-          const str = String(field);
-          if (str.includes(',') || str.includes('\n') || str.includes('"')) {
-            return '"' + str.replace(/"/g, '""') + '"';
-          }
-          return str;
-        }).join(',')
-      ).join('\n');
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${this.getCurrentWarehouseName()}_采购单.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+},
 
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `${this.getCurrentWarehouseName()}_采购单.csv`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-    },
 
     showSummaryReport() {
       alert('汇总报表功能开发中...');
     },
 
-    downloadAllWarehousesReport() {
-      const header = ["仓库", "Part Code", "Part Name", "Shelf Qty", "Min Qty", "需补数量", "状态"];
-      const allRows = [];
+   // 1) 合并某仓库的最低库存 ∪ 现有库存（带 fromMinOnly 标记）
+mergePartsForWarehouse(warehouseId) {
+  const data = this.warehouseData[warehouseId] || { minStockMap: {}, parts: [], nameMap: {} };
+  const minMap = data.minStockMap || {};
+  const nm = data.nameMap || {};
+  const stock = Array.isArray(data.parts) ? data.parts : [];
 
-      this.warehouses.forEach(warehouse => {
-        const data = this.warehouseData[warehouse.id] || { parts: [] };
-        data.parts.forEach(item => {
-          const qty = Number(item.qty);
-          const minQty = Number(item.minQty);
-          const status = (this.isNumber(qty) && this.isNumber(minQty))
-            ? (qty < minQty ? '需补货' : qty > minQty ? '库存充足' : '刚好达标')
-            : '数据不完整';
-          const needQty = (this.isNumber(qty) && this.isNumber(minQty) && qty < minQty) ? (minQty - qty) : 0;
-          allRows.push([warehouse.name, item.code, item.name, qty, minQty, needQty, status]);
-        });
-      });
+  const byCode = {};
+  // 先放现有库存
+  for (const it of stock) {
+    if (!it || !it.code) continue;
+    const code = String(it.code).trim();
+    if (!code) continue;
+    const qty = Number(it.qty);
+    const minQty = (typeof it.minQty === 'number' && !Number.isNaN(it.minQty))
+      ? it.minQty
+      : (typeof minMap[code] === 'number' ? minMap[code] : 0);
+    byCode[code] = {
+      code,
+      name: (it.name || nm[code] || ''),
+      qty: (typeof qty === 'number' && !Number.isNaN(qty)) ? qty : 0,
+      minQty,
+      fromMinOnly: false
+    };
+  }
+  // 再补最低库存里有但库存里没有的
+  for (const codeRaw of Object.keys(minMap)) {
+    const code = String(codeRaw).trim();
+    if (!code) continue;
+    if (!byCode[code]) {
+      const minQty = Number(minMap[code]);
+      byCode[code] = {
+        code,
+        name: nm[code] || '',
+        qty: 0,
+        minQty: (typeof minQty === 'number' && !Number.isNaN(minQty)) ? minQty : 0,
+        fromMinOnly: true
+      };
+    } else {
+      // 确保 minQty 与最新 minMap 对齐
+      const minQty = Number(minMap[code]);
+      byCode[code].minQty = (typeof minQty === 'number' && !Number.isNaN(minQty)) ? minQty : byCode[code].minQty;
+    }
+  }
 
-      if (allRows.length === 0) {
-        alert("暂无数据可导出");
-        return;
-      }
+  const result = Object.values(byCode);
+  result.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  return result;
+},
 
-      const csvContent = [header, ...allRows].map(row =>
-        row.map(field => {
-          const str = String(field);
-          if (str.includes(',') || str.includes('\n') || str.includes('"')) {
-            return '"' + str.replace(/"/g, '""') + '"';
+// 2) 导出全部仓库报表（含“无库存需补X”）
+downloadAllWarehousesReport() {
+  try {
+    if (!Array.isArray(this.warehouses) || this.warehouses.length === 0) {
+      alert('暂无仓库数据可导出');
+      return;
+    }
+
+    const header = ["仓库", "Part Code", "Part Name", "Shelf Qty", "Min Qty", "需补数量", "状态"];
+    const allRows = [];
+
+    for (const wh of this.warehouses) {
+      if (!wh || !wh.id) continue;
+      const merged = this.mergePartsForWarehouse(wh.id);
+      if (!Array.isArray(merged)) continue;
+
+      for (const item of merged) {
+        const qty = Number(item.qty);
+        const minQty = Number(item.minQty);
+
+        const isQtyNum = (typeof qty === 'number' && !Number.isNaN(qty));
+        const isMinNum = (typeof minQty === 'number' && !Number.isNaN(minQty));
+
+        // 需补数量
+        const needQty = (isQtyNum && isMinNum && qty < minQty) ? (minQty - qty) : 0;
+
+        // 状态字符串
+        let status = '数据不完整';
+        if (isQtyNum && isMinNum) {
+          if (item.fromMinOnly) {
+            // 无现有库存记录：需补 = minQty
+            status = `无库存需补${minQty}`;
+          } else if (qty < minQty) {
+            status = '需补货';
+          } else if (qty > minQty) {
+            status = '库存充足';
+          } else {
+            status = '达标';
           }
-          return str;
-        }).join(',')
-      ).join('\n');
+        }
 
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = "全部仓库库存报表.csv";
-      link.click();
-      URL.revokeObjectURL(link.href);
-    },
+        allRows.push([
+          wh.name || wh.id,
+          item.code || '',
+          item.name || '',
+          isQtyNum ? qty : '',
+          isMinNum ? minQty : '',
+          needQty,
+          status
+        ]);
+      }
+    }
+
+    if (allRows.length === 0) {
+      alert("暂无数据可导出");
+      return;
+    }
+
+    const csvContent = [header, ...allRows].map(row =>
+      row.map(field => {
+        const str = String(field);
+        if (str.includes(',') || str.includes('\n') || str.includes('"')) {
+          return '"' + str.replace(/"/g, '""') + '"';
+        }
+        return str;
+      }).join(',')
+    ).join('\n');
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "全部仓库库存报表.csv";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (err) {
+    console.error('导出报表失败：', err);
+    alert('导出失败，请打开控制台查看错误信息。');
+  }
+},
+
   }
 };
 </script>

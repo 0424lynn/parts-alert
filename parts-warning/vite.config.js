@@ -1,18 +1,13 @@
-import { fileURLToPath, URL } from 'node:url'
-
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import vueDevTools from 'vite-plugin-vue-devtools'
 
-// https://vite.dev/config/
+// 关键：base 写成 /<仓库名>/
 export default defineConfig({
-  plugins: [
-    vue(),
-    vueDevTools(),
-  ],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
-    },
-  },
+  base: '/parts-alert/',
+  plugins: [vue()],
+  // 关键：把构建产物输出到仓库的 docs 目录，便于 Pages 指向 /docs
+  build: {
+    outDir: '../docs',
+    emptyOutDir: true
+  }
 })
