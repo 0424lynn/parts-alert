@@ -92,6 +92,41 @@
           </button>
         </div>
       </div>
+
+      <!-- Google Sheets Sync -->
+      <div class="sheets-sync-row">
+        <div class="sheets-sync-left">
+          <span class="sheets-icon">⬡</span>
+          <span class="sheets-label">Google Sheets Sync</span>
+          <span class="sheets-desc">NCA master template is saved to Google Sheets and loaded automatically on every visit.</span>
+        </div>
+        <div class="sheets-sync-right">
+          <!-- status badge -->
+          <span v-if="!sheetsUrl" class="sync-badge sync-badge-off">Not configured</span>
+          <span v-else-if="sheetsStatus === 'syncing'" class="sync-badge sync-badge-syncing">⟳ Syncing...</span>
+          <span v-else-if="sheetsStatus === 'ok'" class="sync-badge sync-badge-ok">✓ Connected</span>
+          <span v-else-if="sheetsStatus === 'error'" class="sync-badge sync-badge-error">✕ Connection failed</span>
+          <!-- inline URL input -->
+          <template v-if="showSheetsInput">
+            <input
+              v-model="sheetsUrlInput"
+              class="sheets-url-input"
+              placeholder="Paste Apps Script Web App URL here..."
+              @keyup.enter="saveSheetsUrl"
+              @keyup.escape="cancelSheetsConfig"
+            />
+            <button @click="saveSheetsUrl" class="btn btn-success btn-sm">Save</button>
+            <button @click="cancelSheetsConfig" class="btn btn-ghost-danger btn-sm">Cancel</button>
+          </template>
+          <template v-else>
+            <button v-if="sheetsUrl" @click="loadNcaFromSheets" class="btn btn-outline btn-sm">↻ Sync Now</button>
+            <button @click="openSheetsConfig" class="btn btn-outline-nca btn-sm">
+              {{ sheetsUrl ? 'Change URL' : '⚙ Configure' }}
+            </button>
+          </template>
+        </div>
+      </div>
+
     </div>
 
     <!-- ═══ INVENTORY TABLE CARD ═══ -->
@@ -210,6 +245,11 @@ export default {
       dirtyMin: false,
       dirtyParts: false,
       dirtyNames: false,
+      // Google Sheets sync
+      sheetsUrl: localStorage.getItem('nca_sheets_url') || '',
+      sheetsStatus: 'idle', // 'idle' | 'syncing' | 'ok' | 'error'
+      showSheetsInput: false,
+      sheetsUrlInput: '',
     };
   },
   computed: {
@@ -317,6 +357,7 @@ export default {
       localStorage.setItem(LS_KEYS.currentWarehouse, this.currentWarehouse);
     }
     this.loadWorkingSet(this.currentWarehouse);
+    if (this.sheetsUrl) this.loadNcaFromSheets();
   },
   methods: {
     // ── Warehouse list persistence ────────────────────────
@@ -554,6 +595,11 @@ export default {
         this.dirtyNames = true;
         this.persistIfDirty(this.currentWarehouse);
 
+        // If NCA, sync to Google Sheets
+        if (this.currentWarehouse === this.ncaId && this.sheetsUrl) {
+          this.saveNcaToSheets();
+        }
+
         alert(`Minimum stock file uploaded for warehouse: ${this.getCurrentWarehouseName()}`);
         e.target.value = '';
       };
@@ -608,6 +654,84 @@ export default {
         this.dirtyParts = true;
         this.persistIfDirty(this.currentWarehouse);
         alert('Current inventory cleared.');
+      }
+    },
+
+    // ── Google Sheets Sync ────────────────────────────────
+    openSheetsConfig() {
+      this.sheetsUrlInput = this.sheetsUrl;
+      this.showSheetsInput = true;
+    },
+    saveSheetsUrl() {
+      this.sheetsUrl = this.sheetsUrlInput.trim();
+      localStorage.setItem('nca_sheets_url', this.sheetsUrl);
+      this.showSheetsInput = false;
+      if (this.sheetsUrl) this.loadNcaFromSheets();
+    },
+    cancelSheetsConfig() {
+      this.showSheetsInput = false;
+    },
+
+    async loadNcaFromSheets() {
+      if (!this.sheetsUrl) return;
+      this.sheetsStatus = 'syncing';
+      try {
+        const res = await fetch(this.sheetsUrl);
+        const json = await res.json();
+        if (json.status === 'ok' && Array.isArray(json.data)) {
+          const minMap = {};
+          const nameMap = {};
+          for (const row of json.data) {
+            const code = String(row['Part Code'] || '').trim();
+            const name  = String(row['Part Name'] || '').trim();
+            const minQty = Number(row['Min Qty']);
+            if (code && !isNaN(minQty)) minMap[code] = minQty;
+            if (code && name) nameMap[code] = name;
+          }
+          const ncaExisting = this.warehouseData[this.ncaId] || { parts: [], nameMap: {} };
+          this.warehouseData[this.ncaId] = {
+            ...ncaExisting,
+            minStockMap: minMap,
+            nameMap: { ...ncaExisting.nameMap, ...nameMap },
+          };
+          this.saveAllWarehouseData();
+          if (this.currentWarehouse === this.ncaId) {
+            this.loadWorkingSet(this.ncaId);
+            this.dirtyMin = false;
+            this.dirtyParts = false;
+            this.dirtyNames = false;
+          }
+          this.sheetsStatus = 'ok';
+        } else {
+          this.sheetsStatus = 'error';
+        }
+      } catch (e) {
+        console.error('Google Sheets load failed:', e);
+        this.sheetsStatus = 'error';
+      }
+    },
+
+    async saveNcaToSheets() {
+      if (!this.sheetsUrl) return;
+      const ncaData  = this.warehouseData[this.ncaId] || {};
+      const minMap   = ncaData.minStockMap || {};
+      const nameMap  = ncaData.nameMap || {};
+      const rows = Object.entries(minMap).map(([code, minQty]) => ({
+        'Part Code': code,
+        'Part Name': nameMap[code] || '',
+        'Min Qty': minQty,
+      }));
+      try {
+        await fetch(this.sheetsUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: rows }),
+        });
+        this.sheetsStatus = 'ok';
+      } catch (e) {
+        console.error('Google Sheets save failed:', e);
+        this.sheetsStatus = 'error';
       }
     },
 
@@ -1212,6 +1336,77 @@ export default {
   color: #1e40af;
   border: 1.5px solid #1e40af;
 }
+
+/* ── Google Sheets Sync row ───────────────────────────── */
+.sheets-sync-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: #f8faff;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+}
+
+.sheets-sync-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sheets-icon {
+  font-size: 16px;
+  color: #1e40af;
+}
+
+.sheets-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e40af;
+  white-space: nowrap;
+}
+
+.sheets-desc {
+  font-size: 12px;
+  color: #8892b0;
+  max-width: 480px;
+}
+
+.sheets-sync-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sheets-url-input {
+  padding: 6px 10px;
+  border: 1.5px solid #93c5fd;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 320px;
+  outline: none;
+  color: #1a1a2e;
+}
+.sheets-url-input:focus { border-color: #3b82f6; }
+
+.sync-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sync-badge-off     { background: #f1f5f9; color: #94a3b8; }
+.sync-badge-syncing { background: #dbeafe; color: #1e40af; }
+.sync-badge-ok      { background: #d1fae5; color: #065f46; }
+.sync-badge-error   { background: #fee2e2; color: #991b1b; }
 .btn-outline {
   background: transparent;
   color: #4f6ef7;
