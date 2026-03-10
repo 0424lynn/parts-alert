@@ -119,7 +119,8 @@
             <button @click="cancelSheetsConfig" class="btn btn-ghost-danger btn-sm">Cancel</button>
           </template>
           <template v-else>
-            <button v-if="sheetsUrl" @click="loadNcaFromSheets" class="btn btn-outline btn-sm">↻ Sync Now</button>
+            <button v-if="sheetsUrl" @click="pushNcaToSheets" class="btn btn-nca btn-sm">↑ Push to Sheets</button>
+            <button v-if="sheetsUrl" @click="loadNcaFromSheets" class="btn btn-outline btn-sm">↓ Pull from Sheets</button>
             <button @click="openSheetsConfig" class="btn btn-outline-nca btn-sm">
               {{ sheetsUrl ? 'Change URL' : '⚙ Configure' }}
             </button>
@@ -709,6 +710,16 @@ export default {
         console.error('Google Sheets load failed:', e);
         this.sheetsStatus = 'error';
       }
+    },
+
+    async pushNcaToSheets() {
+      const ncaMin = this.warehouseData[this.ncaId]?.minStockMap || {};
+      if (Object.keys(ncaMin).length === 0) {
+        alert('No NCA minimum stock data found locally. Please upload the NCA minimum stock file first.');
+        return;
+      }
+      await this.saveNcaToSheets();
+      alert(`NCA data (${Object.keys(ncaMin).length} parts) has been pushed to Google Sheets.`);
     },
 
     async saveNcaToSheets() {
