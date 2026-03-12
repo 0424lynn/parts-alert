@@ -247,7 +247,7 @@ export default {
       dirtyParts: false,
       dirtyNames: false,
       // Google Sheets sync
-      sheetsUrl: localStorage.getItem('nca_sheets_url') || '',
+      sheetsUrl: localStorage.getItem('nca_sheets_url') || import.meta.env.VITE_APPS_SCRIPT_URL || '',
       sheetsStatus: 'idle', // 'idle' | 'syncing' | 'ok' | 'error'
       showSheetsInput: false,
       sheetsUrlInput: '',
